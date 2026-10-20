@@ -560,9 +560,10 @@ export function findUserByEmail(ws: WorkOSStore, email: string): WorkOSUser | un
 
 /**
  * The one membership a user holds in an organization that is not `inactive`. `POST
- * /user_management/organization_memberships` 409s a second live membership and
- * validateSeedConfig rejects one, so the first match is the only match — and a stale
- * deactivated record is never taken for the live one.
+ * /user_management/organization_memberships` never adds a second live membership (it answers
+ * with the existing active one, or a 400 for a pending one) and validateSeedConfig rejects one,
+ * so the first match is the only match — and a stale deactivated record is never taken for the
+ * live one.
  */
 export function liveMembershipFor(
   ws: WorkOSStore,

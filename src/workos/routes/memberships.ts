@@ -37,7 +37,9 @@ export function membershipRoutes(ctx: RouteContext): void {
 
     const existing = liveMembershipFor(ws, organizationId, userId);
     // The API reference: a pending membership is an unaccepted invitation, which the user has to
-    // accept; creating over it is a 400, not the conflict an active one is.
+    // accept; creating over it is a 400. An active one is answered with the membership as it is,
+    // role included — production does not 409 here, and the reference lists no 409 for this
+    // endpoint.
     if (existing?.status === 'pending') {
       throw new WorkOSApiError(
         400,
@@ -45,9 +47,7 @@ export function membershipRoutes(ctx: RouteContext): void {
         'cannot_reactivate_pending_organization_membership',
       );
     }
-    if (existing) {
-      throw new WorkOSApiError(409, 'Membership already exists', 'conflict');
-    }
+    if (existing) return c.json(formatMembership(existing, ws), 201);
 
     const roleSlug = (body.role_slug as string) ?? 'member';
 

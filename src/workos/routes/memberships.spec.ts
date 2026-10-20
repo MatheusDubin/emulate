@@ -84,20 +84,27 @@ describe('Membership routes', () => {
     expect(got.status).toBe(404);
   });
 
-  it('rejects duplicate active membership', async () => {
+  it('returns the existing membership, unchanged, on a create over an active one', async () => {
     const org = await createOrg('Dup Org');
     const user = await createUser('dup@test.com');
 
-    await req('/user_management/organization_memberships', {
-      method: 'POST',
-      body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
-    });
+    const first = await json(
+      await req('/user_management/organization_memberships', {
+        method: 'POST',
+        body: JSON.stringify({ organization_id: org.id, user_id: user.id, role_slug: 'admin' }),
+      }),
+    );
 
     const res = await req('/user_management/organization_memberships', {
       method: 'POST',
-      body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
+      body: JSON.stringify({ organization_id: org.id, user_id: user.id, role_slug: 'member' }),
     });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(201);
+    const again = await json(res);
+    expect(again.id).toBe(first.id);
+    expect(again.role.slug).toBe('admin');
+    const list = await json(await req(`/user_management/organization_memberships?organization_id=${org.id}`));
+    expect(list.data).toHaveLength(1);
   });
 
   describe('create over an existing membership', () => {
