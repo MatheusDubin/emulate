@@ -109,13 +109,13 @@ describe('Membership routes', () => {
       ({ app, store } = createTestApp());
     });
 
-    async function existing(status: 'inactive' | 'pending') {
+    async function existing(status: 'inactive' | 'pending', roleSlug?: string) {
       const org = await createOrg('Existing Org');
       const user = await createUser(`${status}@existing.test`);
       const m = await json(
         await req('/user_management/organization_memberships', {
           method: 'POST',
-          body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
+          body: JSON.stringify({ organization_id: org.id, user_id: user.id, role_slug: roleSlug }),
         }),
       );
       getWorkOSStore(store).organizationMemberships.update(m.id, { status });
@@ -146,6 +146,15 @@ describe('Membership routes', () => {
       expect(m.status).toBe('active');
       expect(m.role.slug).toBe('admin');
       expect(await membershipsOf(orgId)).toHaveLength(1);
+    });
+
+    it('activates an inactive membership with the default role when none is requested', async () => {
+      const { orgId, userId, id } = await existing('inactive', 'admin');
+      const res = await create(orgId, userId);
+      expect(res.status).toBe(201);
+      const m = await json(res);
+      expect(m.id).toBe(id);
+      expect(m.role.slug).toBe('member');
     });
 
     it('refuses to create over a pending membership', async () => {
