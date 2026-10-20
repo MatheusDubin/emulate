@@ -126,6 +126,35 @@ describe('Seeding organization memberships', () => {
     expect(byEmail['new@acme.com'].role).toEqual({ slug: 'member' });
   });
 
+  // A seed may keep a deactivated membership beside the live one for the same user. The seeded
+  // invitation must find the live membership, not revive the stale inactive row beside it.
+  it('leaves a seeded member alone when an inactive membership sits beside the active one', async () => {
+    emulator = await createEmulator({
+      port: 0,
+      seed: {
+        users: [{ email: 'returning@acme.com' }],
+        organizations: [
+          {
+            id: 'org_01SEEDEDRETURN',
+            name: 'Acme Corp',
+            memberships: [
+              { email: 'returning@acme.com', status: 'inactive' },
+              { email: 'returning@acme.com', status: 'active', role: 'admin' },
+            ],
+          },
+        ],
+        invitations: [{ email: 'returning@acme.com', organization_id: 'org_01SEEDEDRETURN' }],
+      },
+    });
+
+    const res = await fetch(
+      `${emulator.url}/user_management/organization_memberships?organization_id=org_01SEEDEDRETURN&statuses=active,inactive,pending`,
+      { headers: auth(emulator.apiKey) },
+    );
+    const statuses = ((await res.json()) as any).data.map((m: any) => `${m.status}:${m.role.slug}`).sort();
+    expect(statuses).toEqual(['active:admin', 'inactive:member']);
+  });
+
   describe('seed config validation', () => {
     const findError = (config: Parameters<typeof validateSeedConfig>[0], pathFragment: string) => {
       const { valid, errors } = validateSeedConfig(config);

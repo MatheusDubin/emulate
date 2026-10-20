@@ -657,9 +657,12 @@ export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
     });
 
   const role = { slug: inv.role_slug ?? 'member' };
-  const existing = ws.organizationMemberships
+  // A seed may keep a deactivated membership beside the live one for the same user; the live
+  // one is the membership, and the stale inactive row must not be revived next to it.
+  const held = ws.organizationMemberships
     .findBy('organization_id', inv.organization_id)
-    .find((m) => m.user_id === user.id);
+    .filter((m) => m.user_id === user.id);
+  const existing = held.find((m) => m.status !== 'inactive') ?? held[0];
   if (existing) {
     // A seeded invitation for an active member leaves the membership as it is.
     if (existing.status === 'inactive') {
