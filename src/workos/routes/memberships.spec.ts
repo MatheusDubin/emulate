@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import { createServer, type ApiKeyMap } from '../../core/index.js';
 import { workosPlugin } from '../index.js';
 import { formatMembership } from '../helpers.js';
-import type { WorkOSStore } from '../store.js';
+import { getWorkOSStore, type WorkOSStore } from '../store.js';
 
 const apiKeys: ApiKeyMap = { sk_test_mem: { environment: 'test' } };
 const headers = { Authorization: 'Bearer sk_test_mem', 'Content-Type': 'application/json' };
@@ -98,6 +98,65 @@ describe('Membership routes', () => {
       body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
     });
     expect(res.status).toBe(409);
+  });
+
+  describe('create over an existing membership', () => {
+    // The API reference: creating over an inactive membership activates it with the requested
+    // role; over a pending one it is a 400, since the user has to accept the invitation instead.
+    let store: ReturnType<typeof createTestApp>['store'];
+
+    beforeEach(() => {
+      ({ app, store } = createTestApp());
+    });
+
+    async function existing(status: 'inactive' | 'pending') {
+      const org = await createOrg('Existing Org');
+      const user = await createUser(`${status}@existing.test`);
+      const m = await json(
+        await req('/user_management/organization_memberships', {
+          method: 'POST',
+          body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
+        }),
+      );
+      getWorkOSStore(store).organizationMemberships.update(m.id, { status });
+      return { orgId: org.id as string, userId: user.id as string, id: m.id as string };
+    }
+
+    const create = (orgId: string, userId: string, roleSlug?: string) =>
+      req('/user_management/organization_memberships', {
+        method: 'POST',
+        body: JSON.stringify({ organization_id: orgId, user_id: userId, role_slug: roleSlug }),
+      });
+
+    const membershipsOf = async (orgId: string) =>
+      (
+        await json(
+          await req(
+            `/user_management/organization_memberships?organization_id=${orgId}&statuses=active,inactive,pending`,
+          ),
+        )
+      ).data;
+
+    it('activates an inactive membership with the requested role, keeping its id', async () => {
+      const { orgId, userId, id } = await existing('inactive');
+      const res = await create(orgId, userId, 'admin');
+      expect(res.status).toBe(201);
+      const m = await json(res);
+      expect(m.id).toBe(id);
+      expect(m.status).toBe('active');
+      expect(m.role.slug).toBe('admin');
+      expect(await membershipsOf(orgId)).toHaveLength(1);
+    });
+
+    it('refuses to create over a pending membership', async () => {
+      const { orgId, userId } = await existing('pending');
+      const res = await create(orgId, userId);
+      expect(res.status).toBe(400);
+      expect((await json(res)).code).toBe('cannot_reactivate_pending_organization_membership');
+      const memberships = await membershipsOf(orgId);
+      expect(memberships).toHaveLength(1);
+      expect(memberships[0].status).toBe('pending');
+    });
   });
 
   it('lists memberships filtered by org', async () => {

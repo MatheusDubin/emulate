@@ -8,7 +8,7 @@ import {
   parseArrayParam,
 } from '../../core/index.js';
 import { getWorkOSStore } from '../store.js';
-import { formatMembership, formatListResponse } from '../helpers.js';
+import { formatMembership, formatListResponse, liveMembershipFor } from '../helpers.js';
 import { deleteAgentInstancesForMembership, revokeAgentSessionsForMembership } from '../agent-sessions.js';
 
 export function membershipRoutes(ctx: RouteContext): void {
@@ -35,14 +35,34 @@ export function membershipRoutes(ctx: RouteContext): void {
     const user = ws.users.get(userId);
     if (!user) throw notFound('User');
 
-    const existing = ws.organizationMemberships
-      .findBy('organization_id', organizationId)
-      .find((m) => m.user_id === userId && m.status !== 'inactive');
+    const existing = liveMembershipFor(ws, organizationId, userId);
+    // The API reference: a pending membership is an unaccepted invitation, which the user has to
+    // accept; creating over it is a 400, not the conflict an active one is.
+    if (existing?.status === 'pending') {
+      throw new WorkOSApiError(
+        400,
+        'A pending organization membership cannot be reactivated. The user needs to accept the invitation instead.',
+        'cannot_reactivate_pending_organization_membership',
+      );
+    }
     if (existing) {
       throw new WorkOSApiError(409, 'Membership already exists', 'conflict');
     }
 
     const roleSlug = (body.role_slug as string) ?? 'member';
+
+    // The API reference: creating over an inactive membership activates it with the requested
+    // role, so the user keeps one membership and its id rather than gaining a second.
+    const inactive = ws.organizationMemberships
+      .findBy('organization_id', organizationId)
+      .find((m) => m.user_id === userId && m.status === 'inactive');
+    if (inactive) {
+      const reactivated = ws.organizationMemberships.update(inactive.id, {
+        status: 'active',
+        role: { slug: roleSlug },
+      });
+      return c.json(formatMembership(reactivated!, ws), 201);
+    }
 
     const membership = ws.organizationMemberships.insert({
       object: 'organization_membership',
