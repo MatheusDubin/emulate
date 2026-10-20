@@ -276,8 +276,23 @@ describe('Auth routes', () => {
 
     it('carries an invitation across the gate', async () => {
       const org = createOrg('Gated Corp');
+      // The account comes first: inviting an address with no account creates one, without a
+      // password, so a sign-up after the invitation would find the email taken.
+      const user = await json(
+        await req('/user_management/users', {
+          method: 'POST',
+          body: JSON.stringify({ email: 'invited@test.com', password: 'pw' }),
+        }),
+      );
       const invitation = await invite('invited@test.com', org.id, 'admin');
-      const { user, body } = await gatedSignIn('invited@test.com', { invitation_token: invitation.token });
+      const body = await json(
+        await post({
+          grant_type: 'password',
+          email: 'invited@test.com',
+          password: 'pw',
+          invitation_token: invitation.token,
+        }),
+      );
 
       // Not spent by the gate — the client may never come back from a 403.
       expect((await readInvitation(invitation.token)).state).toBe('pending');
@@ -1610,6 +1625,45 @@ describe('Auth routes', () => {
     const claims = decodeJwt((await json(res)).access_token);
     expect(claims.role).toBe('admin');
     expect(claims.permissions).toEqual(['org:perm']);
+  });
+
+  it('mints every role the membership holds and the union of their permissions', async () => {
+    const ws = getWorkOSStore(store);
+    const write = ws.permissions.insert({ object: 'permission', slug: 'doc:write', name: 'Write', description: null });
+    const read = ws.permissions.insert({ object: 'permission', slug: 'doc:read', name: 'Read', description: null });
+    const defineRole = (slug: string, permissionIds: string[]) => {
+      const role = ws.roles.insert({
+        object: 'role',
+        slug,
+        name: slug,
+        description: null,
+        type: 'EnvironmentRole',
+        organization_id: null,
+        is_default_role: false,
+        priority: 0,
+      });
+      for (const permissionId of permissionIds)
+        ws.rolePermissions.insert({ role_id: role.id, permission_id: permissionId });
+    };
+    defineRole('editor', [write.id]);
+    defineRole('viewer', [read.id, write.id]);
+
+    const user = await createUser('many-roles@test.com');
+    const org = joinOrg(user.id, 'Many Roles Corp', { role: 'editor' });
+    const membership = ws.organizationMemberships.findBy('organization_id', org.id)[0];
+    const put = await req(`/user_management/organization_memberships/${membership.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role_slugs: ['editor', 'viewer'] }),
+    });
+    expect(put.status).toBe(200);
+
+    const res = await signInWithMagicAuth('many-roles@test.com');
+    expect(res.status).toBe(200);
+    const claims = decodeJwt((await json(res)).access_token);
+    expect(claims.role).toBe('editor');
+    expect(claims.roles).toEqual(['editor', 'viewer']);
+    // The union, deduplicated in role order.
+    expect(claims.permissions).toEqual(['doc:write', 'doc:read']);
   });
 
   it('includes client_id on the access token when the authorize flow carries one', async () => {

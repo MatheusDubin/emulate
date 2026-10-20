@@ -20,6 +20,7 @@ import {
 } from './constants.js';
 import type { WorkOSStore } from './store.js';
 import type { EventBus } from './event-bus.js';
+import { membershipRoleFields, membershipRoleSlugs } from './membership-roles.js';
 import type {
   WorkOSAgentBlueprint,
   WorkOSAgentInstance,
@@ -144,8 +145,9 @@ export function formatMembership(m: WorkOSOrganizationMembership, ws: WorkOSStor
   // them, which breaks strict SDK deserializers (e.g. the WorkOS Python SDK's
   // `OrganizationMembership.from_dict`, whose required-key lookup raises on the first
   // missing field). `directory_managed` is stored on the membership — seeding a directory
-  // sets it — `custom_attributes` defaults to `{}`, `roles` is the single primary role, and
-  // the `user` is resolved from `user_id`.
+  // sets it — `custom_attributes` defaults to `{}`, `role` and `roles` are derived from the
+  // stored set in role priority order (see membershipRoleSlugs), and the `user` is resolved
+  // from `user_id`.
   const user = ws.users.get(m.user_id);
   if (!user) {
     // Every insertion path guarantees a live user (the create route 404s an unknown
@@ -157,22 +159,28 @@ export function formatMembership(m: WorkOSOrganizationMembership, ws: WorkOSStor
       `No user '${m.user_id}' for membership '${m.id}': the user was deleted without cascading, or the membership was inserted without validation`,
     );
   }
+  const roles = membershipRoleSlugs(ws, m).map((slug) => ({ slug }));
   return {
     ...formatEntity(m),
+    role: roles[0],
+    roles,
     directory_managed: m.directory_managed ?? false,
     custom_attributes: {},
-    roles: [m.role],
     user: formatUser(user),
   };
 }
 
 // Webhook events carry a slimmer membership than the REST responses: the real WorkOS
 // `organization_membership.*` event payload requires `directory_managed` and
-// `custom_attributes`, but NOT `roles` or an embedded `user` (see EVENT_DATA_REQUIREMENTS).
-// Keep the event shape spec-accurate instead of reusing the REST serializer.
-export function formatMembershipEvent(m: WorkOSOrganizationMembership): Record<string, unknown> {
+// `custom_attributes` and carries `role` and `roles` like the REST shape, but has no embedded
+// `user` (see EVENT_DATA_REQUIREMENTS). Keep the event shape spec-accurate instead of reusing
+// the REST serializer.
+export function formatMembershipEvent(m: WorkOSOrganizationMembership, ws: WorkOSStore): Record<string, unknown> {
+  const roles = membershipRoleSlugs(ws, m).map((slug) => ({ slug }));
   return {
     ...formatEntity(m),
+    role: roles[0],
+    roles,
     directory_managed: m.directory_managed ?? false,
     custom_attributes: {},
   };
@@ -628,6 +636,64 @@ export function formatInvitation(inv: WorkOSInvitation): Record<string, unknown>
 }
 
 /**
+ * What WorkOS creates the moment an invitation to an organization is sent: the recipient's user,
+ * when the address has no account yet, and their membership, `pending` with the invitation's role.
+ * acceptInvitation activates that same membership; revoking the invitation leaves it behind, as in
+ * production. A membership that already exists takes the invitation's role, and an inactive one
+ * goes back to `pending` so acceptance activates it again; the REST route refuses to invite an
+ * active member before this runs. Shared by the invitations REST route and seeded invitations so
+ * the two cannot drift.
+ */
+export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
+  if (!inv.organization_id || !ws.organizations.get(inv.organization_id)) return;
+
+  const user =
+    findUserByEmail(ws, inv.email) ??
+    ws.users.insert({
+      object: 'user',
+      email: inv.email,
+      name: null,
+      first_name: null,
+      last_name: null,
+      email_verified: false,
+      profile_picture_url: null,
+      last_sign_in_at: null,
+      external_id: null,
+      metadata: {},
+      locale: null,
+      password_hash: null,
+      impersonator: null,
+    });
+
+  const role = { slug: inv.role_slug ?? 'member' };
+  // A seed may keep a deactivated membership beside the live one for the same user; the live
+  // one is the membership, and the stale inactive row must not be revived next to it.
+  const held = ws.organizationMemberships
+    .findBy('organization_id', inv.organization_id)
+    .filter((m) => m.user_id === user.id);
+  const existing = held.find((m) => m.status !== 'inactive') ?? held[0];
+  if (existing) {
+    // A seeded invitation for an active member leaves the membership as it is.
+    if (existing.status === 'inactive') {
+      ws.organizationMemberships.update(existing.id, { status: 'pending', role });
+    } else if (existing.status === 'pending' && existing.role.slug !== role.slug) {
+      ws.organizationMemberships.update(existing.id, { role });
+    }
+    return;
+  }
+
+  ws.organizationMemberships.insert({
+    object: 'organization_membership',
+    organization_id: inv.organization_id,
+    user_id: user.id,
+    role,
+    status: 'pending',
+    external_id: null,
+    metadata: {},
+  });
+}
+
+/**
  * Mark an invitation accepted and join its recipient to the organization it names, returning that
  * organization's id (null if the invitation names none). Shared by the invitations REST route and
  * the authenticate grants that accept an `invitation_token` so the two cannot drift; validating
@@ -663,13 +729,16 @@ export function acceptInvitation(
         object: 'organization_membership',
         organization_id: inv.organization_id,
         user_id: user.id,
-        role: { slug: roleSlug },
+        ...membershipRoleFields(ws, inv.organization_id, [roleSlug]),
         status: 'active',
         external_id: null,
         metadata: {},
       });
     } else if (existing.status !== 'active') {
-      ws.organizationMemberships.update(existing.id, { status: 'active', role: { slug: roleSlug } });
+      ws.organizationMemberships.update(existing.id, {
+        status: 'active',
+        ...membershipRoleFields(ws, inv.organization_id, [roleSlug]),
+      });
     }
   }
 

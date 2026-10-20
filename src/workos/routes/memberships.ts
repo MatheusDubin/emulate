@@ -9,6 +9,7 @@ import {
 } from '../../core/index.js';
 import { getWorkOSStore } from '../store.js';
 import { formatMembership, formatListResponse, liveMembershipFor } from '../helpers.js';
+import { membershipRoleFields, roleSlugsFromBody } from '../membership-roles.js';
 import { deleteAgentInstancesForMembership, revokeAgentSessionsForMembership } from '../agent-sessions.js';
 
 export function membershipRoutes(ctx: RouteContext): void {
@@ -49,18 +50,15 @@ export function membershipRoutes(ctx: RouteContext): void {
     }
     if (existing) return c.json(formatMembership(existing, ws), 201);
 
-    const roleSlug = (body.role_slug as string) ?? 'member';
+    const roleFields = membershipRoleFields(ws, organizationId, roleSlugsFromBody(body) ?? ['member']);
 
     // The API reference: creating over an inactive membership activates it with the requested
-    // role, so the user keeps one membership and its id rather than gaining a second.
+    // role(s), so the user keeps one membership and its id rather than gaining a second.
     const inactive = ws.organizationMemberships
       .findBy('organization_id', organizationId)
       .find((m) => m.user_id === userId && m.status === 'inactive');
     if (inactive) {
-      const reactivated = ws.organizationMemberships.update(inactive.id, {
-        status: 'active',
-        role: { slug: roleSlug },
-      });
+      const reactivated = ws.organizationMemberships.update(inactive.id, { status: 'active', ...roleFields });
       return c.json(formatMembership(reactivated!, ws), 201);
     }
 
@@ -68,7 +66,7 @@ export function membershipRoutes(ctx: RouteContext): void {
       object: 'organization_membership',
       organization_id: organizationId,
       user_id: userId,
-      role: { slug: roleSlug },
+      ...roleFields,
       status: 'active',
       external_id: (body.external_id as string) ?? null,
       metadata: (body.metadata as Record<string, string>) ?? {},
@@ -112,9 +110,8 @@ export function membershipRoutes(ctx: RouteContext): void {
     const body = await parseJsonBody(c);
     const updates: Record<string, unknown> = {};
 
-    if ('role_slug' in body) {
-      updates.role = { slug: body.role_slug as string };
-    }
+    const roleSlugs = roleSlugsFromBody(body);
+    if (roleSlugs) Object.assign(updates, membershipRoleFields(ws, m.organization_id, roleSlugs));
     if ('external_id' in body) {
       updates.external_id = body.external_id ?? null;
     }
@@ -139,9 +136,16 @@ export function membershipRoutes(ctx: RouteContext): void {
   app.put('/user_management/organization_memberships/:id/deactivate', (c) => {
     const m = ws.organizationMemberships.get(c.req.param('id'));
     if (!m) throw notFound('Organization Membership');
-    if (m.status === 'inactive') {
-      throw validationError('Membership is already inactive');
+    // The API reference: a pending membership is an unaccepted invitation, revoked rather than
+    // deactivated; an inactive one is a no-op that emits no event, so the store is not touched.
+    if (m.status === 'pending') {
+      throw new WorkOSApiError(
+        400,
+        'Pending organization memberships cannot be deactivated. The invite must be revoked instead.',
+        'cannot_deactivate_pending_organization_membership',
+      );
     }
+    if (m.status === 'inactive') return c.json(formatMembership(m, ws));
     const updated = ws.organizationMemberships.update(m.id, {
       status: 'inactive',
     });
@@ -152,9 +156,16 @@ export function membershipRoutes(ctx: RouteContext): void {
   app.put('/user_management/organization_memberships/:id/reactivate', (c) => {
     const m = ws.organizationMemberships.get(c.req.param('id'));
     if (!m) throw notFound('Organization Membership');
-    if (m.status === 'active') {
-      throw validationError('Membership is already active');
+    // The API reference: a pending membership becomes active by accepting its invitation; an
+    // active one is a no-op that emits no event.
+    if (m.status === 'pending') {
+      throw new WorkOSApiError(
+        400,
+        'A pending organization membership cannot be reactivated. The user needs to accept the invitation instead.',
+        'cannot_reactivate_pending_organization_membership',
+      );
     }
+    if (m.status === 'active') return c.json(formatMembership(m, ws));
     const updated = ws.organizationMemberships.update(m.id, {
       status: 'active',
     });
