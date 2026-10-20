@@ -630,8 +630,10 @@ export function formatInvitation(inv: WorkOSInvitation): Record<string, unknown>
  * What WorkOS creates the moment an invitation to an organization is sent: the recipient's user,
  * when the address has no account yet, and their membership, `pending` with the invitation's role.
  * acceptInvitation activates that same membership; revoking the invitation leaves it behind, as in
- * production. A user who already has a membership in the organization keeps it as it is. Shared by
- * the invitations REST route and seeded invitations so the two cannot drift.
+ * production. A membership that already exists takes the invitation's role, and an inactive one
+ * goes back to `pending` so acceptance activates it again; the REST route refuses to invite an
+ * active member before this runs. Shared by the invitations REST route and seeded invitations so
+ * the two cannot drift.
  */
 export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
   if (!inv.organization_id || !ws.organizations.get(inv.organization_id)) return;
@@ -654,16 +656,25 @@ export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
       impersonator: null,
     });
 
+  const role = { slug: inv.role_slug ?? 'member' };
   const existing = ws.organizationMemberships
     .findBy('organization_id', inv.organization_id)
     .find((m) => m.user_id === user.id);
-  if (existing) return;
+  if (existing) {
+    // A seeded invitation for an active member leaves the membership as it is.
+    if (existing.status === 'inactive') {
+      ws.organizationMemberships.update(existing.id, { status: 'pending', role });
+    } else if (existing.status === 'pending' && existing.role.slug !== role.slug) {
+      ws.organizationMemberships.update(existing.id, { role });
+    }
+    return;
+  }
 
   ws.organizationMemberships.insert({
     object: 'organization_membership',
     organization_id: inv.organization_id,
     user_id: user.id,
-    role: { slug: inv.role_slug ?? 'member' },
+    role,
     status: 'pending',
     external_id: null,
     metadata: {},

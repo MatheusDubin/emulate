@@ -223,24 +223,68 @@ describe('Invitation routes', () => {
       expect(memberships[0].status).toBe('pending');
     });
 
-    it('keeps an existing membership as it is', async () => {
-      const user = await json(
-        await req('/user_management/users', { method: 'POST', body: JSON.stringify({ email: 'bob@example.test' }) }),
-      );
+    async function member(email: string) {
+      const user = await json(await req('/user_management/users', { method: 'POST', body: JSON.stringify({ email }) }));
       const org = await json(
-        await req('/organizations', { method: 'POST', body: JSON.stringify({ name: 'Bob Org' }) }),
+        await req('/organizations', { method: 'POST', body: JSON.stringify({ name: `${email} Org` }) }),
       );
-      await req('/user_management/organization_memberships', {
-        method: 'POST',
-        body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
-      });
-      await req('/user_management/invitations', {
+      const membership = await json(
+        await req('/user_management/organization_memberships', {
+          method: 'POST',
+          body: JSON.stringify({ organization_id: org.id, user_id: user.id }),
+        }),
+      );
+      return { user, org, membership };
+    }
+
+    it('refuses to invite an active member', async () => {
+      const { org } = await member('bob@example.test');
+      const res = await req('/user_management/invitations', {
         method: 'POST',
         body: JSON.stringify({ email: 'bob@example.test', organization_id: org.id }),
       });
+      expect(res.status).toBe(400);
+      expect((await json(res)).code).toBe('user_already_organization_member');
       const memberships = await membershipsOf(org.id);
       expect(memberships).toHaveLength(1);
       expect(memberships[0].status).toBe('active');
+      expect((await json(await req('/user_management/invitations?email=bob@example.test'))).data).toHaveLength(0);
+    });
+
+    it('resets an inactive membership to pending with the invitation role', async () => {
+      const { org, membership } = await member('dana@example.test');
+      await req(`/user_management/organization_memberships/${membership.id}/deactivate`, { method: 'PUT' });
+
+      const inv = await json(
+        await req('/user_management/invitations', {
+          method: 'POST',
+          body: JSON.stringify({ email: 'dana@example.test', organization_id: org.id, role_slug: 'admin' }),
+        }),
+      );
+      let memberships = await membershipsOf(org.id);
+      expect(memberships).toHaveLength(1);
+      expect(memberships[0].id).toBe(membership.id);
+      expect(memberships[0].status).toBe('pending');
+      expect(memberships[0].role.slug).toBe('admin');
+
+      await req(`/user_management/invitations/${inv.id}/accept`, { method: 'POST' });
+      memberships = await membershipsOf(org.id);
+      expect(memberships[0].id).toBe(membership.id);
+      expect(memberships[0].status).toBe('active');
+      expect(memberships[0].role.slug).toBe('admin');
+    });
+
+    it('gives a pending membership the role of a fresh invitation', async () => {
+      const { org, inv } = await invite();
+      await req(`/user_management/invitations/${inv.id}/revoke`, { method: 'POST' });
+      await req('/user_management/invitations', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'alice@example.test', organization_id: org.id, role_slug: 'admin' }),
+      });
+      const memberships = await membershipsOf(org.id);
+      expect(memberships).toHaveLength(1);
+      expect(memberships[0].status).toBe('pending');
+      expect(memberships[0].role.slug).toBe('admin');
     });
   });
 
