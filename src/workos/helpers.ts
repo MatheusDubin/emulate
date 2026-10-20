@@ -665,7 +665,8 @@ export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
       impersonator: null,
     });
 
-  const role = { slug: inv.role_slug ?? 'member' };
+  const roleSlug = inv.role_slug ?? 'member';
+  const roleFields = membershipRoleFields(ws, inv.organization_id, [roleSlug]);
   // A seed may keep a deactivated membership beside the live one for the same user; the live
   // one is the membership, and the stale inactive row must not be revived next to it.
   const held = ws.organizationMemberships
@@ -675,9 +676,12 @@ export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
   if (existing) {
     // A seeded invitation for an active member leaves the membership as it is.
     if (existing.status === 'inactive') {
-      ws.organizationMemberships.update(existing.id, { status: 'pending', role });
-    } else if (existing.status === 'pending' && existing.role.slug !== role.slug) {
-      ws.organizationMemberships.update(existing.id, { role });
+      ws.organizationMemberships.update(existing.id, { status: 'pending', ...roleFields });
+    } else if (existing.status === 'pending') {
+      const heldRoles = membershipRoleSlugs(ws, existing);
+      if (heldRoles.length !== 1 || heldRoles[0] !== roleSlug) {
+        ws.organizationMemberships.update(existing.id, roleFields);
+      }
     }
     return;
   }
@@ -686,7 +690,7 @@ export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
     object: 'organization_membership',
     organization_id: inv.organization_id,
     user_id: user.id,
-    role,
+    ...roleFields,
     status: 'pending',
     external_id: null,
     metadata: {},
