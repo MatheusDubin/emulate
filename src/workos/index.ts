@@ -80,6 +80,7 @@ import {
   formatAgentInstanceSessionEvent,
   generateClientId,
   findUserByEmail,
+  provisionInvitee,
   formatConnectedAccountEvent,
   dataIntegrationIdFor,
   linkOAuthIdentity,
@@ -880,7 +881,7 @@ export function seedFromConfig(store: Store, _baseUrl: string, config: WorkOSSee
   if (config.invitations) {
     for (const invConfig of config.invitations) {
       const token = generateVerificationToken();
-      ws.invitations.insert({
+      const inv = ws.invitations.insert({
         object: 'invitation',
         email: invConfig.email.trim(),
         state: 'pending',
@@ -894,6 +895,7 @@ export function seedFromConfig(store: Store, _baseUrl: string, config: WorkOSSee
         revoked_at: null,
         accepted_user_id: null,
       });
+      provisionInvitee(inv, ws);
     }
   }
 

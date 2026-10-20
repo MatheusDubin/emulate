@@ -6,6 +6,7 @@ import {
   expiresIn,
   formatListResponse,
   acceptInvitation,
+  provisionInvitee,
   findUserByEmail,
   emailsMatch,
   requireEmailField,
@@ -42,6 +43,8 @@ export function invitationRoutes(ctx: RouteContext): void {
       revoked_at: null,
       accepted_user_id: null,
     });
+
+    provisionInvitee(inv, ws);
 
     return c.json(formatInvitation(inv), 201);
   });

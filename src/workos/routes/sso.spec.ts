@@ -296,9 +296,13 @@ describe('SSO routes', () => {
 
       expect(res.status).toBe(400);
       expect((await json(res)).code).toBe('invitation_cannot_be_used_for_email');
-      // Nothing was consumed: no account was provisioned for the interloper, and the same code
-      // still signs in once the invitation is dropped.
-      expect(getWorkOSStore(store).users.all()).toHaveLength(0);
+      // Nothing was consumed: no account was provisioned for the interloper (the recipient's was,
+      // by the invitation), and the same code still signs in once the invitation is dropped.
+      expect(
+        getWorkOSStore(store)
+          .users.all()
+          .map((u) => u.email),
+      ).toEqual(['recipient@sso.example.com']);
       expect((await authenticate(code)).status).toBe(200);
     });
   });

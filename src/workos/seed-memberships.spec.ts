@@ -100,6 +100,32 @@ describe('Seeding organization memberships', () => {
     ).rejects.toThrow(/email must match a user defined in users/);
   });
 
+  // A seeded invitation provisions what `POST /user_management/invitations` does: the recipient's
+  // pending membership, and their user when the address has no account yet.
+  it('gives a seeded invitation its pending membership, creating the user it names', async () => {
+    emulator = await createEmulator({
+      port: 0,
+      seed: {
+        users: [{ email: 'seeded@acme.com' }],
+        organizations: [{ id: 'org_01SEEDEDINVITE', name: 'Acme Corp' }],
+        invitations: [
+          { email: 'seeded@acme.com', organization_id: 'org_01SEEDEDINVITE', role_slug: 'admin' },
+          { email: 'new@acme.com', organization_id: 'org_01SEEDEDINVITE' },
+        ],
+      },
+    });
+
+    const res = await fetch(
+      `${emulator.url}/user_management/organization_memberships?organization_id=org_01SEEDEDINVITE&statuses=pending`,
+      { headers: auth(emulator.apiKey) },
+    );
+    const list = (await res.json()) as any;
+    const byEmail = Object.fromEntries(list.data.map((m: any) => [m.user.email, m]));
+    expect(Object.keys(byEmail).sort()).toEqual(['new@acme.com', 'seeded@acme.com']);
+    expect(byEmail['seeded@acme.com'].role).toEqual({ slug: 'admin' });
+    expect(byEmail['new@acme.com'].role).toEqual({ slug: 'member' });
+  });
+
   describe('seed config validation', () => {
     const findError = (config: Parameters<typeof validateSeedConfig>[0], pathFragment: string) => {
       const { valid, errors } = validateSeedConfig(config);

@@ -627,6 +627,50 @@ export function formatInvitation(inv: WorkOSInvitation): Record<string, unknown>
 }
 
 /**
+ * What WorkOS creates the moment an invitation to an organization is sent: the recipient's user,
+ * when the address has no account yet, and their membership, `pending` with the invitation's role.
+ * acceptInvitation activates that same membership; revoking the invitation leaves it behind, as in
+ * production. A user who already has a membership in the organization keeps it as it is. Shared by
+ * the invitations REST route and seeded invitations so the two cannot drift.
+ */
+export function provisionInvitee(inv: WorkOSInvitation, ws: WorkOSStore): void {
+  if (!inv.organization_id || !ws.organizations.get(inv.organization_id)) return;
+
+  const user =
+    findUserByEmail(ws, inv.email) ??
+    ws.users.insert({
+      object: 'user',
+      email: inv.email,
+      name: null,
+      first_name: null,
+      last_name: null,
+      email_verified: false,
+      profile_picture_url: null,
+      last_sign_in_at: null,
+      external_id: null,
+      metadata: {},
+      locale: null,
+      password_hash: null,
+      impersonator: null,
+    });
+
+  const existing = ws.organizationMemberships
+    .findBy('organization_id', inv.organization_id)
+    .find((m) => m.user_id === user.id);
+  if (existing) return;
+
+  ws.organizationMemberships.insert({
+    object: 'organization_membership',
+    organization_id: inv.organization_id,
+    user_id: user.id,
+    role: { slug: inv.role_slug ?? 'member' },
+    status: 'pending',
+    external_id: null,
+    metadata: {},
+  });
+}
+
+/**
  * Mark an invitation accepted and join its recipient to the organization it names, returning that
  * organization's id (null if the invitation names none). Shared by the invitations REST route and
  * the authenticate grants that accept an `invitation_token` so the two cannot drift; validating
